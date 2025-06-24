@@ -336,8 +336,9 @@ class QuicClientProtocol(QuicConnectionProtocol):
 
     def quic_event_received(self, event: QuicEvent):
         """处理QUIC事件"""
-        logger.debug(f"收到QUIC事件: {type(event).__name__}")
+        logger.info(f"收到QUIC事件: {type(event).__name__}")
         if isinstance(event, StreamDataReceived):
+            logger.info(f"收到流数据: {len(event.data)} 字节, 流ID: {event.stream_id}")
             self._handle_stream_data(event.stream_id, event.data, event.end_stream)
         else:
             super().quic_event_received(event)
@@ -351,16 +352,31 @@ class QuicClientProtocol(QuicConnectionProtocol):
             data: 接收到的数据
             end_stream: 是否是流的结束
         """
+        logger.info(f"处理流数据: {len(data)} 字节")
+
+        # 先尝试作为文本处理
         try:
-            # 尝试解析为视频数据包
+            text_data = data.decode('utf-8', errors='ignore')
+            logger.info(f"解码为文本: {text_data[:100]}...")
+        except:
+            pass
+
+        # 尝试解析为视频数据包
+        try:
             self._parse_video_packet(data)
         except Exception as e:
             # 尝试解析为JSON消息
             try:
                 message = json.loads(data.decode('utf-8'))
-                logger.debug(f"收到JSON消息: {message.get('type', 'unknown')}")
+                logger.info(f"解析为JSON消息: {message}")
+
+                # 如果是测试数据，打印出来
+                if message.get('type') == 'test_data':
+                    logger.info(f"收到测试数据: {message}")
             except:
                 logger.error(f"无法解析数据: {e}")
+                import traceback
+                traceback.print_exc()
 
     def _parse_video_packet(self, data: bytes):
         """
@@ -369,59 +385,102 @@ class QuicClientProtocol(QuicConnectionProtocol):
         Args:
             data: 接收到的数据
         """
-        # 检查数据是否足够长
-        if len(data) < 4:
-            logger.warning("数据包太短")
-            return
-
-        # 解析头部长度
-        header_len = struct.unpack('!I', data[:4])[0]
-
-        # 检查数据包是否包含完整头部
-        if len(data) < 4 + header_len:
-            logger.warning("数据包不完整")
-            return
-
-        # 解析头部
+        # 先尝试解析为JSON
         try:
-            header_json = data[4:4 + header_len]
-            header = json.loads(header_json.decode('utf-8'))
-        except Exception as e:
-            logger.error(f"解析头部失败: {e}")
-            return
+            message = json.loads(data.decode('utf-8', errors='ignore'))
+            logger.info(f"解析为JSON消息: {message.get('type', 'unknown')}")
 
-        # 提取帧数据
-        frame_data = data[4 + header_len:]
-
-        # 检查是否是视频数据
-        if header.get('type') == 'video_data':
-            # 检查是否需要处理分片
-            total_fragments = header.get('total_fragments', 1)
-            fragment_index = header.get('fragment_index', 0)
-            frame_id = header.get('frame_id', 0)
-
-            if total_fragments > 1:
-                # 处理分片
-                if frame_id not in self._packets_buffer:
-                    self._packets_buffer[frame_id] = {}
-
-                self._packets_buffer[frame_id][fragment_index] = frame_data
-
-                # 检查是否收到所有分片
-                if len(self._packets_buffer[frame_id]) == total_fragments:
-                    # 重组完整帧
-                    fragments = [self._packets_buffer[frame_id][i] for i in range(total_fragments)]
-                    complete_frame = b''.join(fragments)
-
-                    # 清理缓冲区
-                    del self._packets_buffer[frame_id]
-
-                    # 回调
-                    if self.video_frame_callback:
-                        self.video_frame_callback(complete_frame, header)
-            else:
-                # 单一数据包，直接回调
+            # 如果是测试数据，直接回调
+            if message.get('type') == 'test_data':
+                logger.info(f"收到测试数据: {message.get('message', '')}")
                 if self.video_frame_callback:
-                    self.video_frame_callback(frame_data, header)
-        else:
-            logger.debug(f"收到非视频数据: {header.get('type', 'unknown')}")
+                    self.video_frame_callback(data, message)
+                return
+        except:
+            pass
+
+        # 尝试解析为视频数据包
+        try:
+            # 检查数据是否足够长
+            if len(data) < 4:
+                logger.warning(f"数据包太短: {len(data)} 字节")
+                return
+
+            # 解析头部长度
+            try:
+                header_len = struct.unpack('!I', data[:4])[0]
+                logger.debug(f"解析头部长度: {header_len}")
+
+                # 检查头部长度是否合理
+                if header_len > 10000:  # 设置一个合理的最大值
+                    logger.error(f"头部长度不合理: {header_len} 字节")
+                    return
+
+                # 检查数据包是否包含完整头部
+                if len(data) < 4 + header_len:
+                    logger.warning(f"数据包不完整: 需要 {4 + header_len} 字节, 实际 {len(data)} 字节")
+                    return
+
+                # 解析头部
+                try:
+                    header_json = data[4:4 + header_len]
+                    header = json.loads(header_json.decode('utf-8'))
+                    logger.debug(f"解析头部成功: {header}")
+                except Exception as e:
+                    logger.error(f"解析头部失败: {e}")
+                    return
+
+                # 提取帧数据
+                frame_data = data[4 + header_len:]
+                logger.debug(f"提取帧数据: {len(frame_data)} 字节")
+
+                # 检查是否是视频数据
+                if header.get('type') == 'video_data':
+                    logger.info(f"收到视频数据: 帧ID {header.get('frame_id', 'unknown')}, {len(frame_data)} 字节")
+
+                    # 检查是否需要处理分片
+                    total_fragments = header.get('total_fragments', 1)
+                    fragment_index = header.get('fragment_index', 0)
+                    frame_id = header.get('frame_id', 0)
+
+                    if total_fragments > 1:
+                        # 处理分片
+                        if frame_id not in self._packets_buffer:
+                            self._packets_buffer[frame_id] = {}
+
+                        self._packets_buffer[frame_id][fragment_index] = frame_data
+                        logger.debug(f"存储分片: 帧ID {frame_id}, 分片 {fragment_index}/{total_fragments}")
+
+                        # 检查是否收到所有分片
+                        if len(self._packets_buffer[frame_id]) == total_fragments:
+                            # 重组完整帧
+                            fragments = [self._packets_buffer[frame_id][i] for i in range(total_fragments)]
+                            complete_frame = b''.join(fragments)
+                            logger.info(f"重组完整帧: 帧ID {frame_id}, {len(complete_frame)} 字节")
+
+                            # 清理缓冲区
+                            del self._packets_buffer[frame_id]
+
+                            # 回调
+                            if self.video_frame_callback:
+                                self.video_frame_callback(complete_frame, header)
+                            else:
+                                logger.warning("没有设置视频帧回调函数")
+                    else:
+                        # 单一数据包，直接回调
+                        if self.video_frame_callback:
+                            self.video_frame_callback(frame_data, header)
+                        else:
+                            logger.warning("没有设置视频帧回调函数")
+                else:
+                    logger.debug(f"收到非视频数据: {header.get('type', 'unknown')}")
+
+            except Exception as e:
+                logger.error(f"解析数据包头部异常: {e}")
+                import traceback
+                traceback.print_exc()
+
+        except Exception as e:
+            logger.error(f"解析视频数据包异常: {e}")
+            import traceback
+            traceback.print_exc()

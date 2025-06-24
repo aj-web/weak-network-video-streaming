@@ -1,5 +1,6 @@
 import asyncio
 import argparse
+import json
 import logging
 import queue
 import signal
@@ -76,9 +77,14 @@ class VideoStreamingServer:
 
         # 定义编码帧回调
         def on_frame_encoded(frame_data, frame_info):
-            # 在实际应用中，这里会将数据发送到所有连接的客户端
-            logger.debug(f"编码帧回调: {len(frame_data)} 字节")
-            # TODO: 实现发送逻辑
+            logger.info(f"编码帧回调: {len(frame_data)} 字节")
+            # 广播视频帧到所有客户端
+            try:
+                self.quic_server.broadcast_video_frame(frame_data, frame_info)
+            except Exception as e:
+                logger.error(f"广播视频帧异常: {e}")
+                import traceback
+                traceback.print_exc()
 
         # 视频编码模块
         self.video_encoder = VideoEncoder(
@@ -161,32 +167,8 @@ class VideoStreamingServer:
         self.screen_capturer.start()
         self.video_encoder.start()
 
-        # 创建一个简单的队列来存储编码后的帧，等待发送
-        encoded_frames_queue = queue.Queue(maxsize=10)
-
-        # 帧处理线程
-        def process_encoded_frames():
-            while self.running:
-                try:
-                    # 从队列获取编码后的帧
-                    frame_data = encoded_frames_queue.get(timeout=0.1)
-
-                    # 在实际应用中，这里会将数据发送到所有连接的客户端
-                    # 为了简单起见，这里只是记录一下
-                    logger.debug(f"处理编码帧: {len(frame_data)} 字节")
-
-                    encoded_frames_queue.task_done()
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    logger.error(f"帧处理异常: {e}", exc_info=True)
-
-        # 启动帧处理线程
-        frame_processor = threading.Thread(target=process_encoded_frames)
-        frame_processor.daemon = True
-        frame_processor.start()
-
         try:
+            count = 0
             while self.running:
                 # 捕获屏幕
                 frame = self.screen_capturer.capture_frame()
@@ -198,7 +180,29 @@ class VideoStreamingServer:
                 roi_info = self.roi_detector.detect_roi(frame, mouse_pos)
 
                 # 编码帧
-                success = self.video_encoder.encode_frame(frame, roi_info)
+                self.video_encoder.encode_frame(frame, roi_info)
+
+                # 每隔5帧发送一次测试数据
+                count += 1
+                if count % 5 == 0:
+                    try:
+                        # 向所有连接的客户端发送测试数据
+                        test_message = {
+                            'type': 'test_data',
+                            'timestamp': int(time.time() * 1000),
+                            'message': f'Test message #{count}'
+                        }
+
+                        # 使用JSON格式发送
+                        json_data = json.dumps(test_message).encode('utf-8')
+                        logger.info(f"发送测试数据: {len(json_data)} 字节, 消息: {test_message['message']}")
+
+                        # 直接发送JSON数据，不使用视频包格式
+                        self.quic_server.protocol.broadcast_video_frame(json_data, test_message)
+                    except Exception as e:
+                        logger.error(f"发送测试数据异常: {e}")
+                        import traceback
+                        traceback.print_exc()
 
                 # 控制循环速率
                 time.sleep(1.0 / self.fps)

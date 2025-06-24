@@ -127,14 +127,25 @@ class VideoEncoder:
                 packets = self._encode_frame(frame_data, roi_info)
 
                 # 处理编码后的数据包
-                if packets and self.frame_callback:
-                    for packet in packets:
-                        # 调用回调，传递编码后的数据和帧信息
-                        self.frame_callback(packet, {
-                            'frame_count': self.frame_count,
-                            'is_keyframe': False,  # 这里需要从编码器获取实际的关键帧信息
-                            'timestamp': time.time()
-                        })
+                if packets:
+                    total_bytes = sum(len(packet) for packet in packets)
+                    print(f"编码帧 #{self.frame_count}: {total_bytes} 字节")
+
+                    # 调用回调函数（如果设置了）
+                    if self.frame_callback:
+                        for packet in packets:
+                            # 构建帧信息
+                            frame_info = {
+                                'frame_count': self.frame_count,
+                                'timestamp': time.time(),
+                                'is_keyframe': False,  # 这里可能需要从编码器获取实际信息
+                                'type': 'video_data',  # 添加类型字段
+                                'width': self.width,
+                                'height': self.height,
+                                'frame_id': self.frame_count
+                            }
+                            print(f"调用编码帧回调: {len(packet)} 字节")
+                            self.frame_callback(packet, frame_info)
 
                 self.packet_queue.task_done()
 

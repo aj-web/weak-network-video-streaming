@@ -34,7 +34,7 @@ class VideoStreamProtocol:
         # 网络状态回调
         self.network_status_callback = None
 
-    def connection_made(self, connection_id):
+    def connection_made(self, connection_id, handler=None):
         """新连接建立时调用"""
         logger.info(f"新建连接: {connection_id}")
         self.connections[connection_id] = {
@@ -45,8 +45,12 @@ class VideoStreamProtocol:
             'packets_sent': 0,
             'rtt': 0,
             'packet_loss': 0,
-            'bandwidth': 0
+            'bandwidth': 0,
+            'handler': handler  # 保存handler实例
         }
+
+        # 输出当前连接数
+        logger.info(f"当前连接数: {len(self.connections)}")
 
     def connection_lost(self, connection_id):
         """连接断开时调用"""
@@ -110,7 +114,8 @@ class VideoStreamProtocol:
             'keyframe': frame_info.get('keyframe', False),
             'width': frame_info.get('width', 0),
             'height': frame_info.get('height', 0),
-            'data_size': len(frame_data)
+            'data_size': len(frame_data),
+            'type': 'video_data'  # 添加类型字段
         }
 
         # 序列化头部
@@ -118,7 +123,10 @@ class VideoStreamProtocol:
 
         # 创建包含头部长度的数据包
         header_len = len(header_json)
+        # 确保头部长度以网络字节序（大端）编码
         packet = struct.pack('!I', header_len) + header_json + frame_data
+
+        logger.debug(f"创建数据包: 头部 {header_len} 字节, 数据 {len(frame_data)} 字节, 总计 {len(packet)} 字节")
 
         return packet, header
 
@@ -136,12 +144,115 @@ class VideoStreamProtocol:
         }
         return stats
 
+    def broadcast_video_frame(self, frame_data, frame_info=None):
+        """
+        广播视频帧到所有连接的客户端
+
+        Args:
+            frame_data: 视频帧数据
+            frame_info: 帧信息
+        """
+        logger.info(f"协议广播视频帧: {len(frame_data)} 字节, 连接数: {len(self.connections)}")
+
+        if not self.connections:
+            logger.warning("没有活跃连接，无法广播视频帧")
+            return
+
+        # 如果没有提供帧信息，创建一个默认的
+        if frame_info is None:
+            frame_info = {}
+
+        # 确保帧信息包含必要的字段
+        if 'type' not in frame_info:
+            frame_info['type'] = 'video_data'
+        if 'frame_id' not in frame_info:
+            frame_info['frame_id'] = self.next_packet_id
+            self.next_packet_id += 1
+        if 'timestamp' not in frame_info:
+            frame_info['timestamp'] = int(time.time() * 1000)
+
+        # 如果是纯文本数据，直接发送
+        if frame_info.get('type') == 'test_data' and isinstance(frame_data, bytes):
+            for conn_id, conn_data in self.connections.items():
+                try:
+                    handler = conn_data.get('handler')
+                    if handler and hasattr(handler, 'send_packet'):
+                        logger.info(f"发送测试数据到连接 {conn_id}")
+                        success = handler.send_packet(frame_data)
+                        if success:
+                            logger.info(f"成功发送测试数据到连接 {conn_id}")
+                        else:
+                            logger.warning(f"发送测试数据到连接 {conn_id} 失败")
+                    else:
+                        logger.warning(f"连接 {conn_id} 没有有效的处理程序")
+                except Exception as e:
+                    logger.error(f"发送测试数据到连接 {conn_id} 异常: {e}")
+            return
+
+        # 创建视频数据包
+        try:
+            packet, header = self.create_video_packet(frame_data, frame_info)
+            logger.info(f"创建视频数据包: {len(packet)} 字节, 帧ID: {header.get('frame_id', 'unknown')}")
+
+            # 广播到所有连接
+            for conn_id, conn_data in self.connections.items():
+                try:
+                    handler = conn_data.get('handler')
+                    if handler and hasattr(handler, 'send_packet'):
+                        logger.info(f"发送视频帧到连接 {conn_id}")
+                        success = handler.send_packet(packet)
+                        if success:
+                            logger.info(f"成功发送视频帧到连接 {conn_id}")
+                        else:
+                            logger.warning(f"发送视频帧到连接 {conn_id} 失败")
+                    else:
+                        logger.warning(f"连接 {conn_id} 没有有效的处理程序")
+                except Exception as e:
+                    logger.error(f"发送视频帧到连接 {conn_id} 异常: {e}")
+                    import traceback
+                    traceback.print_exc()
+        except Exception as e:
+            logger.error(f"创建视频数据包失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+    def broadcast_test_message(self, message_data):
+        """
+        广播测试消息到所有连接的客户端
+
+        Args:
+            message_data: 消息数据(JSON编码的字节)
+        """
+        logger.info(f"广播测试消息: {len(message_data)} 字节, 连接数: {len(self.connections)}")
+
+        if not self.connections:
+            logger.warning("没有活跃连接，无法广播测试消息")
+            return
+
+        # 广播到所有连接
+        for conn_id, conn_data in self.connections.items():
+            try:
+                handler = conn_data.get('handler')
+                if handler and hasattr(handler, 'send_packet'):
+                    logger.info(f"发送测试消息到连接 {conn_id}")
+                    success = handler.send_packet(message_data)
+                    if success:
+                        logger.info(f"成功发送测试消息到连接 {conn_id}")
+                    else:
+                        logger.warning(f"发送测试消息到连接 {conn_id} 失败")
+                else:
+                    logger.warning(f"连接 {conn_id} 没有有效的处理程序")
+            except Exception as e:
+                logger.error(f"发送测试消息到连接 {conn_id} 异常: {e}")
+                import traceback
+                traceback.print_exc()
+
 
 class QuicServer:
     """
     QUIC协议服务器，用于低延迟视频传输
     """
-
     def __init__(self,
                  host: str = "0.0.0.0",
                  port: int = 4433,
@@ -256,6 +367,7 @@ class QuicServer:
         protocol = self.protocol  # 保存对协议处理器的引用
 
         def create_protocol(*args, **kwargs):
+            # 使用类变量保存协议处理器
             return QuicServerHandler(*args, protocol=protocol, **kwargs)
 
         # 启动服务器
@@ -304,6 +416,17 @@ class QuicServer:
         """获取连接统计信息"""
         return self.protocol.get_connection_stats()
 
+    def broadcast_video_frame(self, frame_data, frame_info=None):
+        """
+        广播视频帧到所有连接的客户端
+
+        Args:
+            frame_data: 视频帧数据
+            frame_info: 帧信息
+        """
+        logger.info(f"广播视频帧: {len(frame_data)} 字节")
+        self.protocol.broadcast_video_frame(frame_data, frame_info)
+
 
 class QuicServerHandler(QuicConnectionProtocol):
     """
@@ -311,32 +434,42 @@ class QuicServerHandler(QuicConnectionProtocol):
     """
 
     def __init__(self, *args, **kwargs):
-        self.protocol = kwargs.pop('protocol', None)
+        # 将 protocol 保存为类变量，而不是从 kwargs 中弹出
+        self.video_protocol = kwargs.pop('protocol', None)
         super().__init__(*args, **kwargs)
-        self.connection_id = None
+        self.connection_id = str(id(self))
+        logger.debug(f"创建新的QuicServerHandler: {self.connection_id}")
 
     def connection_made(self, transport):
         """连接建立时调用"""
+        logger.info(f"连接建立: {self.connection_id}")
         super().connection_made(transport)
-        self.connection_id = str(id(self))
-        if self.protocol:
-            self.protocol.connection_made(self.connection_id)
-        logger.info(f"建立新连接: {self.connection_id}")
+
+        # 通知协议处理器
+        if self.video_protocol:
+            self.video_protocol.connection_made(self.connection_id, self)
+        else:
+            logger.error("视频协议处理器为空")
 
     def connection_lost(self, exc):
         """连接断开时调用"""
         logger.info(f"连接断开: {self.connection_id}, 原因: {exc}")
-        if self.protocol:
-            self.protocol.connection_lost(self.connection_id)
+
+        # 通知协议处理器
+        if self.video_protocol:
+            self.video_protocol.connection_lost(self.connection_id)
+
         super().connection_lost(exc)
 
     def quic_event_received(self, event: QuicEvent):
         """处理QUIC事件"""
         logger.debug(f"收到QUIC事件: {type(event).__name__}")
 
-        if isinstance(event, StreamDataReceived) and self.protocol:
+        if isinstance(event, StreamDataReceived) and self.video_protocol:
+            logger.info(f"收到流数据: {len(event.data)} 字节, 流ID: {event.stream_id}")
+
             # 处理客户端发送的数据
-            response = self.protocol.process_stream_data(
+            response = self.video_protocol.process_stream_data(
                 self.connection_id,
                 event.stream_id,
                 event.data
@@ -344,6 +477,7 @@ class QuicServerHandler(QuicConnectionProtocol):
 
             # 如果有响应，发送回客户端
             if response:
+                logger.info(f"发送响应: {len(json.dumps(response).encode('utf-8'))} 字节, 流ID: {event.stream_id}")
                 self._quic.send_stream_data(
                     event.stream_id,
                     json.dumps(response).encode('utf-8')
@@ -351,29 +485,25 @@ class QuicServerHandler(QuicConnectionProtocol):
         else:
             super().quic_event_received(event)
 
-    def send_video_packet(self, frame_data, frame_info=None):
+    def send_packet(self, packet):
         """
-        发送视频数据包
+        发送数据包到客户端
 
         Args:
-            frame_data: 编码后的视频帧数据
-            frame_info: 帧相关信息
+            packet: 要发送的数据包
+
+        Returns:
+            是否成功发送
         """
-        if not self.quic:
+        try:
+            if self._quic:
+                stream_id = self._quic.get_next_available_stream_id()
+                self._quic.send_stream_data(stream_id, packet)
+                logger.info(f"发送数据包: {len(packet)} 字节, 流ID: {stream_id}")
+                return True
+            else:
+                logger.warning("QUIC连接不可用")
+                return False
+        except Exception as e:
+            logger.error(f"发送数据包异常: {e}")
             return False
-
-        # 创建视频数据包
-        packet, header = self.protocol.create_video_packet(frame_data, frame_info)
-
-        # 发送数据包
-        stream_id = self.quic.get_next_available_stream_id()
-        self.quic.send_stream_data(stream_id, packet)
-
-        # 更新统计信息
-        if self.connection_id in self.protocol.connections:
-            conn_state = self.protocol.connections[self.connection_id]
-            conn_state['last_active'] = time.time()
-            conn_state['bytes_sent'] += len(packet)
-            conn_state['packets_sent'] += 1
-
-        return True
