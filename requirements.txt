@@ -1,28 +1,12 @@
-# 核心功能
-opencv-python              # 图像处理和屏幕捕获
-pyffmpeg>=1.4.0           # FFmpeg Python绑定
-aiortc>=1.4.0             # WebRTC实现
-numpy>=1.23.0             # 科学计算
-torch                     # 深度学习框架
-onnx>=1.14.0              # ONNX模型格式
-
-# 网络相关
-asyncio                   # 异步I/O（Python 3.7+自带）
-#uvloop>=0.17.0            # asyncio加速
-aioquic>=0.9.20           # QUIC协议实现
-pyshark>=0.6.0            # 网络包分析
-
-# 用户界面
-PyQt5>=5.15.0             # GUI框架
-pyqtgraph>=0.13.0         # 实时数据可视化
-
-# 系统交互
-pywin32>=306              # Windows API访问
-pynput>=1.7.6             # 鼠标键盘监听
-
-# 测试和性能分析
-pytest>=7.0.0             # 测试框架
-locust>=2.15.0            # 性能测试
-
-#屏幕捕获
-pyautogui==0.9.54
+# requirements.txt (修正版)
+mss>=6.1.0             # 屏幕捕获
+av>=10.0.0             # FFmpeg的Python绑定 (正确的包名是av，不是pyav)
+opencv-python>=4.5.5   # 图像处理
+pyqt6>=6.2.0           # GUI界面
+aioquic>=0.9.20        # QUIC协议实现
+numpy>=1.22.0          # 数学计算
+pyyaml>=6.0            # 配置文件处理
+pytest>=7.0.0          # 测试框架
+pygame>=2.1.2          # 可选用于视频渲染
+cryptography #生成证书
+pyautogui #获取鼠标位置
