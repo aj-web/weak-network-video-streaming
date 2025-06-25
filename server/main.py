@@ -182,28 +182,6 @@ class VideoStreamingServer:
                 # 编码帧
                 self.video_encoder.encode_frame(frame, roi_info)
 
-                # 每隔5帧发送一次测试数据
-                count += 1
-                if count % 5 == 0:
-                    try:
-                        # 向所有连接的客户端发送测试数据
-                        test_message = {
-                            'type': 'test_data',
-                            'timestamp': int(time.time() * 1000),
-                            'message': f'Test message #{count}'
-                        }
-
-                        # 使用JSON格式发送
-                        json_data = json.dumps(test_message).encode('utf-8')
-                        logger.info(f"发送测试数据: {len(json_data)} 字节, 消息: {test_message['message']}")
-
-                        # 修复：调用 broadcast_test_message，避免协议混用
-                        self.quic_server.protocol.broadcast_test_message(json_data)
-                    except Exception as e:
-                        logger.error(f"发送测试数据异常: {e}")
-                        import traceback
-                        traceback.print_exc()
-
                 # 控制循环速率
                 time.sleep(1.0 / self.fps)
 
