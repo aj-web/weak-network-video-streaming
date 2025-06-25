@@ -102,7 +102,7 @@ class VideoEncoder:
                 'tune': 'zerolatency',  # 低延迟调优
                 'profile:v': 'baseline',  # 基准配置文件
                 'level': '3.0',  # H.264级别
-                'x264-params': f'keyint={self.gop_size}:min-keyint={self.gop_size}'  # GOP设置
+                'x264-params': f'repeat-headers=1:keyint={self.gop_size}:min-keyint={self.gop_size}'  # GOP设置, 增加repeat-headers=1
             }
 
             # 如果指定了码率，则设置
@@ -278,11 +278,17 @@ class VideoEncoder:
             if self.use_roi and roi_info:
                 self._apply_roi_encoding(av_frame, roi_info)
 
-            # 编码帧
-            packets = self.stream.encode(av_frame)
+            packets = []
+            for packet in self.stream.encode(av_frame):
+                # 判断是否为关键帧
+                if packet.is_keyframe:
+                    # 先输出SPS/PPS（extradata）
+                    extradata = self.stream.codec_context.extradata
+                    if extradata:
+                        packets.append(bytes(extradata))
+                packets.append(bytes(packet))
 
-            # 将数据包转换为字节列表
-            return [bytes(packet) for packet in packets]
+            return packets
         except Exception as e:
             logger.error(f"编码帧失败: {e}")
             return []
