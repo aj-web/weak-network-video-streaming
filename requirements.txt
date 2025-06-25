@@ -1,0 +1,11 @@
+mss==10.0.0
+av==14.4.0
+opencv-python==4.11.0.86
+PyQt6==6.9.1
+aioquic==1.2.0
+numpy==2.0.2
+PyYAML==6.0.2
+pytest==8.4.1
+pygame==2.6.1
+cryptography==45.0.4
+PyAutoGUI==0.9.54
