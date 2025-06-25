@@ -4,6 +4,12 @@ from typing import Tuple, Optional
 import mss
 import mss.tools
 import threading
+import logging
+import sys
+import os
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 class ScreenCapturer:
@@ -17,14 +23,27 @@ class ScreenCapturer:
             monitor_number: 要捕获的显示器编号(从1开始)
             capture_rate: 目标捕获帧率(fps)
         """
+        # 参数验证
+        if monitor_number < 1:
+            raise ValueError("monitor_number必须大于等于1")
+        if capture_rate < 1 or capture_rate > 120:
+            raise ValueError("capture_rate必须在1-120之间")
+        
         # 在每个线程创建自己的MSS实例
         self.monitor_number = monitor_number
 
         # 初始化一次MSS来获取监视器信息
-        with mss.mss() as sct:
-            self.monitor = sct.monitors[monitor_number]  # 主显示器通常是1
-            self.frame_width = self.monitor["width"]
-            self.frame_height = self.monitor["height"]
+        try:
+            with mss.mss() as sct:
+                if monitor_number > len(sct.monitors) - 1:
+                    raise ValueError(f"显示器编号{monitor_number}超出范围，可用显示器数量: {len(sct.monitors) - 1}")
+                
+                self.monitor = sct.monitors[monitor_number]  # 主显示器通常是1
+                self.frame_width = self.monitor["width"]
+                self.frame_height = self.monitor["height"]
+        except Exception as e:
+            logger.error(f"初始化MSS失败: {e}")
+            raise
 
         # 捕获参数
         self.capture_rate = capture_rate
@@ -45,28 +64,43 @@ class ScreenCapturer:
         # 线程锁，用于同步对共享资源的访问
         self.lock = threading.Lock()
 
-        print(f"初始化屏幕捕获，显示器尺寸: {self.frame_width}x{self.frame_height}")
+        logger.info(f"初始化屏幕捕获，显示器尺寸: {self.frame_width}x{self.frame_height}, 帧率: {capture_rate}fps")
 
     def _ensure_mss(self):
         """确保当前线程有MSS实例"""
         if not hasattr(self.thread_local, 'sct'):
-            self.thread_local.sct = mss.mss()
+            try:
+                self.thread_local.sct = mss.mss()
+            except Exception as e:
+                logger.error(f"创建MSS实例失败: {e}")
+                raise
 
     def start(self):
         """开始屏幕捕获过程"""
+        if self.running:
+            logger.warning("屏幕捕获已经在运行")
+            return
+            
         self.running = True
         self.last_capture_time = time.time()
         self.frame_count = 0
-        print("屏幕捕获已启动")
+        logger.info("屏幕捕获已启动")
 
     def stop(self):
         """停止屏幕捕获过程"""
+        if not self.running:
+            logger.warning("屏幕捕获已经停止")
+            return
+            
         self.running = False
-        print("屏幕捕获已停止")
+        logger.info("屏幕捕获已停止")
 
         # 清理资源
-        if hasattr(self.thread_local, 'sct'):
-            self.thread_local.sct.close()
+        try:
+            if hasattr(self.thread_local, 'sct'):
+                self.thread_local.sct.close()
+        except Exception as e:
+            logger.error(f"清理MSS资源时出错: {e}")
 
     def get_monitor_size(self) -> Tuple[int, int]:
         """获取显示器尺寸"""
@@ -112,13 +146,13 @@ class ScreenCapturer:
 
             return img
         except Exception as e:
-            print(f"捕获帧时出错: {e}")
+            logger.error(f"捕获帧时出错: {e}")
             # 如果捕获失败，返回空帧或最近的帧
             with self.lock:
                 if self.current_frame is not None:
                     return self.current_frame
                 else:
-                    # 创建黑色帧
+                    logger.warning("创建黑色帧作为备用")
                     return np.zeros((self.frame_height, self.frame_width, 4), dtype=np.uint8)
 
     def get_current_fps(self) -> float:
@@ -132,16 +166,25 @@ class ScreenCapturer:
         Returns:
             (x, y) 鼠标坐标
         """
-        # 使用MSS库的get_position可能不可靠，使用其他库
         try:
             # 尝试使用pyautogui获取鼠标位置
             import pyautogui
             x, y = pyautogui.position()
+            # 验证坐标是否在屏幕范围内
+            if x < 0 or y < 0 or x >= self.frame_width or y >= self.frame_height:
+                logger.warning(f"鼠标坐标超出屏幕范围: ({x}, {y})")
+                return (0, 0)
             return x, y
         except ImportError:
-            print("未安装pyautogui库，无法获取鼠标位置")
+            logger.warning("未安装pyautogui库，无法获取鼠标位置")
+            return (0, 0)
+        except Exception as e:
+            logger.error(f"获取鼠标位置时出错: {e}")
             return (0, 0)
 
     def __del__(self):
         """清理资源"""
-        self.stop()
+        try:
+            self.stop()
+        except:
+            pass

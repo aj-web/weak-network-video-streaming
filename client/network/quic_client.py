@@ -325,6 +325,7 @@ class QuicClientProtocol(QuicConnectionProtocol):
         self.video_frame_callback = None
         self._packets_buffer = {}  # 用于重组分片的包
         self._quic_logger = None
+        self._stream_buffer = {}   # 新增：每个流ID的缓冲区
 
     def connection_made(self, transport):
         logger.info("连接已建立")
@@ -354,133 +355,32 @@ class QuicClientProtocol(QuicConnectionProtocol):
         """
         logger.info(f"处理流数据: {len(data)} 字节")
 
-        # 先尝试作为文本处理
-        try:
-            text_data = data.decode('utf-8', errors='ignore')
-            logger.info(f"解码为文本: {text_data[:100]}...")
-        except:
-            pass
+        # 累加到流缓冲
+        buf = self._stream_buffer.setdefault(stream_id, b'') + data
 
-        # 尝试解析为视频数据包
-        try:
-            self._parse_video_packet(data)
-        except Exception as e:
-            # 尝试解析为JSON消息
+        offset = 0
+        while True:
+            if offset + 4 > len(buf):
+                break
             try:
-                message = json.loads(data.decode('utf-8'))
-                logger.info(f"解析为JSON消息: {message}")
-
-                # 如果是测试数据，打印出来
-                if message.get('type') == 'test_data':
-                    logger.info(f"收到测试数据: {message}")
-            except:
-                logger.error(f"无法解析数据: {e}")
-                import traceback
-                traceback.print_exc()
-
-    def _parse_video_packet(self, data: bytes):
-        """
-        解析视频数据包
-
-        Args:
-            data: 接收到的数据
-        """
-        # 先尝试解析为JSON
-        try:
-            message = json.loads(data.decode('utf-8', errors='ignore'))
-            logger.info(f"解析为JSON消息: {message.get('type', 'unknown')}")
-
-            # 如果是测试数据，直接回调
-            if message.get('type') == 'test_data':
-                logger.info(f"收到测试数据: {message.get('message', '')}")
-                if self.video_frame_callback:
-                    self.video_frame_callback(data, message)
-                return
-        except:
-            pass
-
-        # 尝试解析为视频数据包
-        try:
-            # 检查数据是否足够长
-            if len(data) < 4:
-                logger.warning(f"数据包太短: {len(data)} 字节")
-                return
-
-            # 解析头部长度
-            try:
-                header_len = struct.unpack('!I', data[:4])[0]
-                logger.debug(f"解析头部长度: {header_len}")
-
-                # 检查头部长度是否合理
-                if header_len > 10000:  # 设置一个合理的最大值
-                    logger.error(f"头部长度不合理: {header_len} 字节")
-                    return
-
-                # 检查数据包是否包含完整头部
-                if len(data) < 4 + header_len:
-                    logger.warning(f"数据包不完整: 需要 {4 + header_len} 字节, 实际 {len(data)} 字节")
-                    return
-
-                # 解析头部
-                try:
-                    header_json = data[4:4 + header_len]
-                    header = json.loads(header_json.decode('utf-8'))
-                    logger.debug(f"解析头部成功: {header}")
-                except Exception as e:
-                    logger.error(f"解析头部失败: {e}")
-                    return
-
-                # 提取帧数据
-                frame_data = data[4 + header_len:]
-                logger.debug(f"提取帧数据: {len(frame_data)} 字节")
-
-                # 检查是否是视频数据
+                header_len = struct.unpack('!I', buf[offset:offset+4])[0]
+                if header_len > 10000 or offset + 4 + header_len > len(buf):
+                    break
+                header_json = buf[offset+4:offset+4+header_len]
+                header = json.loads(header_json.decode('utf-8'))
+                data_size = header.get('data_size', 0)
+                if offset + 4 + header_len + data_size > len(buf):
+                    break
+                frame_data = buf[offset+4+header_len : offset+4+header_len+data_size]
                 if header.get('type') == 'video_data':
                     logger.info(f"收到视频数据: 帧ID {header.get('frame_id', 'unknown')}, {len(frame_data)} 字节")
-
-                    # 检查是否需要处理分片
-                    total_fragments = header.get('total_fragments', 1)
-                    fragment_index = header.get('fragment_index', 0)
-                    frame_id = header.get('frame_id', 0)
-
-                    if total_fragments > 1:
-                        # 处理分片
-                        if frame_id not in self._packets_buffer:
-                            self._packets_buffer[frame_id] = {}
-
-                        self._packets_buffer[frame_id][fragment_index] = frame_data
-                        logger.debug(f"存储分片: 帧ID {frame_id}, 分片 {fragment_index}/{total_fragments}")
-
-                        # 检查是否收到所有分片
-                        if len(self._packets_buffer[frame_id]) == total_fragments:
-                            # 重组完整帧
-                            fragments = [self._packets_buffer[frame_id][i] for i in range(total_fragments)]
-                            complete_frame = b''.join(fragments)
-                            logger.info(f"重组完整帧: 帧ID {frame_id}, {len(complete_frame)} 字节")
-
-                            # 清理缓冲区
-                            del self._packets_buffer[frame_id]
-
-                            # 回调
-                            if self.video_frame_callback:
-                                self.video_frame_callback(complete_frame, header)
-                            else:
-                                logger.warning("没有设置视频帧回调函数")
-                    else:
-                        # 单一数据包，直接回调
-                        if self.video_frame_callback:
-                            self.video_frame_callback(frame_data, header)
-                        else:
-                            logger.warning("没有设置视频帧回调函数")
+                    if self.video_frame_callback:
+                        self.video_frame_callback(frame_data, header)
                 else:
                     logger.debug(f"收到非视频数据: {header.get('type', 'unknown')}")
-
+                offset += 4 + header_len + data_size
             except Exception as e:
-                logger.error(f"解析数据包头部异常: {e}")
-                import traceback
-                traceback.print_exc()
-
-        except Exception as e:
-            logger.error(f"解析视频数据包异常: {e}")
-            import traceback
-            traceback.print_exc()
+                logger.error(f"解析视频包异常: {e}")
+                break
+        # 剩余未处理的部分保留到下次
+        self._stream_buffer[stream_id] = buf[offset:]

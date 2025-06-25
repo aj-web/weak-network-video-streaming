@@ -427,6 +427,17 @@ class QuicServer:
         logger.info(f"广播视频帧: {len(frame_data)} 字节")
         self.protocol.broadcast_video_frame(frame_data, frame_info)
 
+    async def stop(self):
+        """停止QUIC服务器，断开所有连接"""
+        if not self.running:
+            logger.warning("服务器未运行")
+            return
+        self.running = False
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+        logger.info("QUIC服务器已停止")
+
 
 class QuicServerHandler(QuicConnectionProtocol):
     """

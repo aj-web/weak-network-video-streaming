@@ -197,8 +197,8 @@ class VideoStreamingServer:
                         json_data = json.dumps(test_message).encode('utf-8')
                         logger.info(f"发送测试数据: {len(json_data)} 字节, 消息: {test_message['message']}")
 
-                        # 直接发送JSON数据，不使用视频包格式
-                        self.quic_server.protocol.broadcast_video_frame(json_data, test_message)
+                        # 修复：调用 broadcast_test_message，避免协议混用
+                        self.quic_server.protocol.broadcast_test_message(json_data)
                     except Exception as e:
                         logger.error(f"发送测试数据异常: {e}")
                         import traceback
@@ -252,7 +252,12 @@ class VideoStreamingServer:
 
         # 停止QUIC服务器
         if self.loop:
-            asyncio.run_coroutine_threadsafe(self.quic_server.stop(), self.loop)
+            # 等待异步stop完成
+            future = asyncio.run_coroutine_threadsafe(self.quic_server.stop(), self.loop)
+            try:
+                future.result(timeout=5.0)
+            except Exception as e:
+                logger.error(f"等待QUIC服务器关闭超时或异常: {e}")
 
         # 等待主线程结束
         if self.main_thread and self.main_thread.is_alive():
