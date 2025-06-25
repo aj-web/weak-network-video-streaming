@@ -147,10 +147,6 @@ class VideoStreamProtocol:
     def broadcast_video_frame(self, frame_data, frame_info=None):
         """
         广播视频帧到所有连接的客户端
-
-        Args:
-            frame_data: 视频帧数据
-            frame_info: 帧信息
         """
         logger.info(f"协议广播视频帧: {len(frame_data)} 字节, 连接数: {len(self.connections)}")
 
@@ -171,23 +167,10 @@ class VideoStreamProtocol:
         if 'timestamp' not in frame_info:
             frame_info['timestamp'] = int(time.time() * 1000)
 
-        # 如果是纯文本数据，直接发送
-        if frame_info.get('type') == 'test_data' and isinstance(frame_data, bytes):
-            for conn_id, conn_data in self.connections.items():
-                try:
-                    handler = conn_data.get('handler')
-                    if handler and hasattr(handler, 'send_packet'):
-                        logger.info(f"发送测试数据到连接 {conn_id}")
-                        success = handler.send_packet(frame_data)
-                        if success:
-                            logger.info(f"成功发送测试数据到连接 {conn_id}")
-                        else:
-                            logger.warning(f"发送测试数据到连接 {conn_id} 失败")
-                    else:
-                        logger.warning(f"连接 {conn_id} 没有有效的处理程序")
-                except Exception as e:
-                    logger.error(f"发送测试数据到连接 {conn_id} 异常: {e}")
-            return
+        # 特别标记这是否是关键帧
+        is_keyframe = frame_info.get('is_keyframe', False)
+        if is_keyframe:
+            logger.info(f"广播关键帧: 帧ID {frame_info.get('frame_id')}")
 
         # 创建视频数据包
         try:

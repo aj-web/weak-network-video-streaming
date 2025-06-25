@@ -253,18 +253,9 @@ class VideoEncoder:
             logger.error(f"添加帧到队列失败: {e}")
             return False
 
-    def _encode_frame(self,
-                      frame: np.ndarray,
-                      roi_info: Optional[Dict[str, Any]]) -> List[bytes]:
+    def _encode_frame(self, frame: np.ndarray, roi_info: Optional[Dict[str, Any]]) -> List[bytes]:
         """
         编码单个视频帧
-
-        Args:
-            frame: 要编码的视频帧
-            roi_info: ROI信息
-
-        Returns:
-            编码后的数据包列表
         """
         try:
             # 如果输入是BGRA格式，转换为RGB
@@ -278,14 +269,20 @@ class VideoEncoder:
             if self.use_roi and roi_info:
                 self._apply_roi_encoding(av_frame, roi_info)
 
+            # 获取extradata (包含SPS/PPS)
+            extradata = self.stream.codec_context.extradata
+
+            # 创建包集合
             packets = []
+
+            # 每30帧(GOP)或第一帧时添加SPS/PPS
+            if self.frame_count % self.gop_size == 0 or self.frame_count == 1:
+                if extradata:
+                    logger.info(f"添加SPS/PPS头: {len(extradata)} 字节")
+                    packets.append(bytes(extradata))
+
+            # 编码帧
             for packet in self.stream.encode(av_frame):
-                # 判断是否为关键帧
-                if packet.is_keyframe:
-                    # 先输出SPS/PPS（extradata）
-                    extradata = self.stream.codec_context.extradata
-                    if extradata:
-                        packets.append(bytes(extradata))
                 packets.append(bytes(packet))
 
             return packets

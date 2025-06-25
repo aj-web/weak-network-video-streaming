@@ -28,9 +28,28 @@ decoder = VideoDecoder()
 renderer = VideoRenderer()
 
 # 网络回调只负责入队
+# 修改视频帧回调
 def on_video_frame(frame_data, frame_info):
     logger.info(f"收到视频帧: {len(frame_data)} 字节, 帧ID: {frame_info.get('frame_id', 'unknown')}")
+
+    # 分析帧头部几个字节，增强日志
+    if len(frame_data) > 4:
+        header_bytes = ' '.join([f'{b:02x}' for b in frame_data[:8]])
+        logger.info(f"帧头8字节: {header_bytes}")
+
+        # H.264 NAL单元类型检查
+        if len(frame_data) > 5:
+            nal_type = frame_data[4] & 0x1F
+            if nal_type == 7:  # 7=SPS
+                logger.info(f"检测到可能的SPS帧!")
+            elif nal_type == 8:  # 8=PPS
+                logger.info(f"检测到可能的PPS帧!")
+            elif nal_type == 5:  # 5=IDR帧（关键帧）
+                logger.info(f"检测到关键帧!")
+
+    # 将帧放入队列处理
     received_frames.put((frame_data, frame_info))
+
     # 自动保存原始帧数据
     try:
         with open('recv_test.h264', 'ab') as f:
