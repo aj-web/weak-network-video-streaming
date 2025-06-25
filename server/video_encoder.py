@@ -63,6 +63,10 @@ class VideoEncoder:
         self.frame_callback = frame_callback
         self.roi_qp_offset = roi_qp_offset
 
+        # 新增：缓存最新的关键帧数据
+        self.last_keyframe_data: Optional[bytes] = None
+        self.last_keyframe_info: Optional[Dict[str, Any]] = None
+
         # 编码器状态
         self.running = False
         self.frame_count = 0
@@ -160,37 +164,43 @@ class VideoEncoder:
     def _encoding_loop(self):
         """编码线程主循环"""
         logger.info("编码线程已启动")
-        
+
         while self.running:
             try:
                 # 从队列获取帧和ROI信息
                 frame_data, roi_info = self.packet_queue.get(timeout=0.1)
 
-                # 编码帧
-                packets = self._encode_frame(frame_data, roi_info)
+                # 编码帧，并获取是否为关键帧
+                packets, is_keyframe = self._encode_frame(frame_data, roi_info)
 
                 # 处理编码后的数据包
                 if packets:
-                    total_bytes = sum(len(packet) for packet in packets)
-                    logger.debug(f"编码帧 #{self.frame_count}: {total_bytes} 字节")
+                    # 将一帧的所有数据包合并
+                    full_frame_data = b"".join(packets)
+                    total_bytes = len(full_frame_data)
+                    logger.debug(f"编码帧 #{self.frame_count}: {total_bytes} 字节, 关键帧: {is_keyframe}")
 
                     # 调用回调函数（如果设置了）
                     if self.frame_callback:
-                        for packet in packets:
-                            # 构建帧信息
-                            frame_info = {
-                                'frame_count': self.frame_count,
-                                'timestamp': time.time(),
-                                'is_keyframe': False,  # 这里可能需要从编码器获取实际信息
-                                'type': 'video_data',
-                                'width': self.width,
-                                'height': self.height,
-                                'frame_id': self.frame_count
-                            }
-                            try:
-                                self.frame_callback(packet, frame_info)
-                            except Exception as e:
-                                logger.error(f"帧回调异常: {e}")
+                        # 构建帧信息
+                        frame_info = {
+                            'frame_count': self.frame_count,
+                            'timestamp': time.time(),
+                            'is_keyframe': is_keyframe,
+                            'type': 'video_data',
+                            'width': self.width,
+                            'height': self.height,
+                            'frame_id': self.frame_count
+                        }
+                        try:
+                            # 如果是关键帧，则缓存
+                            if is_keyframe:
+                                self.last_keyframe_data = full_frame_data
+                                self.last_keyframe_info = frame_info
+                            
+                            self.frame_callback(full_frame_data, frame_info)
+                        except Exception as e:
+                            logger.error(f"帧回调异常: {e}")
 
                 self.packet_queue.task_done()
 
@@ -253,9 +263,18 @@ class VideoEncoder:
             logger.error(f"添加帧到队列失败: {e}")
             return False
 
-    def _encode_frame(self, frame: np.ndarray, roi_info: Optional[Dict[str, Any]]) -> List[bytes]:
+    def _encode_frame(self,
+                      frame: np.ndarray,
+                      roi_info: Optional[Dict[str, Any]]) -> Tuple[List[bytes], bool]:
         """
         编码单个视频帧
+
+        Args:
+            frame: 要编码的视频帧
+            roi_info: ROI信息
+
+        Returns:
+            (编码后的数据包列表, 是否是关键帧)
         """
         try:
             # 如果输入是BGRA格式，转换为RGB
@@ -269,26 +288,22 @@ class VideoEncoder:
             if self.use_roi and roi_info:
                 self._apply_roi_encoding(av_frame, roi_info)
 
-            # 获取extradata (包含SPS/PPS)
-            extradata = self.stream.codec_context.extradata
-
-            # 创建包集合
             packets = []
-
-            # 每30帧(GOP)或第一帧时添加SPS/PPS
-            if self.frame_count % self.gop_size == 0 or self.frame_count == 1:
-                if extradata:
-                    logger.info(f"添加SPS/PPS头: {len(extradata)} 字节")
-                    packets.append(bytes(extradata))
-
-            # 编码帧
+            is_keyframe = False
             for packet in self.stream.encode(av_frame):
+                # 判断是否为关键帧
+                if packet.is_keyframe:
+                    is_keyframe = True
+                    # 先输出SPS/PPS（extradata）
+                    extradata = self.stream.codec_context.extradata
+                    if extradata:
+                        packets.append(bytes(extradata))
                 packets.append(bytes(packet))
 
-            return packets
+            return packets, is_keyframe
         except Exception as e:
             logger.error(f"编码帧失败: {e}")
-            return []
+            return [], False
 
     def _apply_roi_encoding(self,
                             av_frame: av.VideoFrame,

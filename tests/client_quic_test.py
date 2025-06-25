@@ -30,7 +30,11 @@ renderer = VideoRenderer()
 # 网络回调只负责入队
 # 修改视频帧回调
 def on_video_frame(frame_data, frame_info):
-    logger.info(f"收到视频帧: {len(frame_data)} 字节, 帧ID: {frame_info.get('frame_id', 'unknown')}")
+    frame_type = frame_info.get('type', 'unknown')
+    is_keyframe = frame_info.get('is_keyframe', False)
+
+    logger.info(
+        f"收到视频帧: {len(frame_data)} 字节, 类型: {frame_type}, 关键帧: {is_keyframe}, 帧ID: {frame_info.get('frame_id', 'unknown')}")
 
     # 分析帧头部几个字节，增强日志
     if len(frame_data) > 4:
@@ -41,9 +45,9 @@ def on_video_frame(frame_data, frame_info):
         if len(frame_data) > 5:
             nal_type = frame_data[4] & 0x1F
             if nal_type == 7:  # 7=SPS
-                logger.info(f"检测到可能的SPS帧!")
+                logger.info(f"检测到SPS帧!")
             elif nal_type == 8:  # 8=PPS
-                logger.info(f"检测到可能的PPS帧!")
+                logger.info(f"检测到PPS帧!")
             elif nal_type == 5:  # 5=IDR帧（关键帧）
                 logger.info(f"检测到关键帧!")
 
@@ -56,19 +60,18 @@ def on_video_frame(frame_data, frame_info):
             f.write(frame_data)
     except Exception as e:
         logger.error(f"保存帧数据失败: {e}")
-
 # 渲染线程：解码并显示
 def render_loop():
     while True:
         try:
             frame_data, frame_info = received_frames.get(timeout=1.0)
-            img = decoder.decode(frame_data)
+            img = decoder.decode(frame_data, frame_info)
             if img is not None:
                 renderer.render(img)
             received_frames.task_done()
-        except Exception:
+        except Exception as e:
+            logger.error(f"渲染错误: {e}")
             pass  # 可加退出条件
-
 # 连接状态回调
 def on_connection_status(status):
     logger.info(f"连接状态更新: {status['status']}")

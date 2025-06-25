@@ -33,6 +33,13 @@ class VideoStreamProtocol:
 
         # 网络状态回调
         self.network_status_callback = None
+        
+        # 新增：对视频编码器的引用
+        self.video_encoder = None
+
+    def set_video_encoder(self, encoder: 'VideoEncoder'):
+        """设置视频编码器的引用"""
+        self.video_encoder = encoder
 
     def connection_made(self, connection_id, handler=None):
         """新连接建立时调用"""
@@ -48,6 +55,25 @@ class VideoStreamProtocol:
             'bandwidth': 0,
             'handler': handler  # 保存handler实例
         }
+
+        # 新增：向新客户端发送最新的关键帧
+        if self.video_encoder and self.video_encoder.last_keyframe_data:
+            logger.info(f"向新连接 {connection_id} 发送缓存的关键帧...")
+            try:
+                packet, _ = self.create_video_packet(
+                    self.video_encoder.last_keyframe_data,
+                    self.video_encoder.last_keyframe_info
+                )
+                if handler and hasattr(handler, 'send_packet'):
+                    success = handler.send_packet(packet)
+                    if success:
+                        logger.info(f"成功向新连接 {connection_id} 发送关键帧")
+                    else:
+                        logger.warning(f"向新连接 {connection_id} 发送关键帧失败")
+                else:
+                    logger.warning(f"无法向新连接 {connection_id} 发送关键帧，handler无效")
+            except Exception as e:
+                logger.error(f"向新连接 {connection_id} 发送关键帧异常: {e}")
 
         # 输出当前连接数
         logger.info(f"当前连接数: {len(self.connections)}")
@@ -148,7 +174,8 @@ class VideoStreamProtocol:
         """
         广播视频帧到所有连接的客户端
         """
-        logger.info(f"协议广播视频帧: {len(frame_data)} 字节, 连接数: {len(self.connections)}")
+        logger.info(
+            f"协议广播视频帧: {len(frame_data)} 字节, 类型: {frame_info.get('type', 'unknown')}, 连接数: {len(self.connections)}")
 
         if not self.connections:
             logger.warning("没有活跃连接，无法广播视频帧")
@@ -160,22 +187,27 @@ class VideoStreamProtocol:
 
         # 确保帧信息包含必要的字段
         if 'type' not in frame_info:
-            frame_info['type'] = 'video_data'
+            frame_info['type'] = 'frame'
         if 'frame_id' not in frame_info:
             frame_info['frame_id'] = self.next_packet_id
             self.next_packet_id += 1
         if 'timestamp' not in frame_info:
             frame_info['timestamp'] = int(time.time() * 1000)
 
-        # 特别标记这是否是关键帧
+        # 特别标记这是否是关键帧或参数集
         is_keyframe = frame_info.get('is_keyframe', False)
-        if is_keyframe:
+        is_parameter_sets = frame_info.get('type') == 'parameter_sets'
+
+        if is_parameter_sets:
+            logger.info(f"广播参数集(SPS/PPS): {len(frame_data)} 字节")
+        elif is_keyframe:
             logger.info(f"广播关键帧: 帧ID {frame_info.get('frame_id')}")
 
         # 创建视频数据包
         try:
             packet, header = self.create_video_packet(frame_data, frame_info)
-            logger.info(f"创建视频数据包: {len(packet)} 字节, 帧ID: {header.get('frame_id', 'unknown')}")
+            logger.info(
+                f"创建视频数据包: {len(packet)} 字节, 类型: {frame_info.get('type')}, 帧ID: {header.get('id', 'unknown')}")
 
             # 广播到所有连接
             for conn_id, conn_data in self.connections.items():
@@ -265,6 +297,10 @@ class QuicServer:
         # 服务器状态
         self.running = False
         self.server = None
+
+    def set_video_encoder(self, encoder: 'VideoEncoder'):
+        """设置视频编码器引用，传递给协议处理器"""
+        self.protocol.set_video_encoder(encoder)
 
     def _generate_self_signed_cert(self):
         """使用Python生成自签名证书(不依赖外部OpenSSL)"""
